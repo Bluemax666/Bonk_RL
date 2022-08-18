@@ -1,0 +1,11 @@
+gym==0.21.0
+keyboard==0.13.5
+numpy==1.23.1
+PyAutoGUI==0.9.53
+pygame==2.0.0
+sb3_contrib==1.5.1a1
+selenium==3.141.0
+stable_baselines3==1.5.1a1
+torch==1.12.1
+pywin32==228
+opencv-python==4.5.3.56
