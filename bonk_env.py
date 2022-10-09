@@ -20,29 +20,40 @@ import time
 import cv2
 
 class Env():
-    def __init__(self, p1_name="player1", p2_name="player2", update_opponent_every=200):
+    def __init__(self, p1_name="player1", p2_name="player2", save_opponent_every=200, n_start_opponent=0, room_pass=""):
         
         self.p1_name = p1_name
         self.p2_name = p2_name
         self.p1_color = "blue"
-        self.p2_color = "red"
         
-        self.host = BonkPlayer(self.p1_name, self.p1_color)
+        if p2_name != "":
+            self.p2_color = "red"
+        else:
+            self.p2_color = None
+        
+        self.host = BonkPlayer(self.p1_name, self.p1_color, room_pass=room_pass, opponent_color=self.p2_color)
         self.host.createGame()
         time.sleep(2)
-        self.opponent = BonkPlayer(self.p2_name, self.p2_color)
-        self.opponent.joinGame()
-        self.opponent.switchWindow()
+        
+        if self.p2_name != "":
+            self.opponent = BonkPlayer(self.p2_name, self.p2_color)
+            self.opponent.joinGame()
+            self.opponent.switchWindow()
+            
         self.host.setMap()
         self.host.startGame()
         
         self.win_reward = 50
-        self.FPS_limit = 15
+        self.FPS_limit = 20
         self.last_time = time.time()
-        self.episode_duration = 60 
+        self.episode_duration = 90
         
-        self.update_opponent_every = update_opponent_every
+        self.height_threshold = 240
+        
+        self.save_opponent_every = save_opponent_every
         self.opponent_start_episode = 10
+        self.change_opponent_every = 200
+        self.newest_opponent_mult = 1
         
         self.nb_actions = 3
         self.len_observation = 16
@@ -58,7 +69,7 @@ class Env():
         self.model = None
         self.opponent_model = None
         self.episode_count = 1
-        self.n_cp_opponent = 0
+        self.n_cp_opponent = n_start_opponent
         
     def setModel(self, model):
         self.model = model
@@ -68,12 +79,18 @@ class Env():
     def reset(self):
         self.episode_count += 1
         
-        if self.episode_count % self.update_opponent_every == 0:
+        if self.episode_count % self.save_opponent_every == 0:
             self.n_cp_opponent += 1
             self.model.save(f"cp/opponent_{self.n_cp_opponent}")
-            self.opponent_model = TQC.load(f"cp/opponent_{self.n_cp_opponent}")
+            
+        if self.episode_count % self.change_opponent_every == 0:
+            opponent = min(np.random.randint(0,(self.n_cp_opponent+1)*self.newest_opponent_mult), self.n_cp_opponent)
+            self.opponent_model = TQC.load(f"cp/opponent_{opponent}")
         
-        self.restartGame()
+        if self.episode_count % 100 == 0:
+            self.restartGame(n_scroll_up=20)
+        else:
+            self.fastRestartGame()
         
         self.host.resetPosInfo()
         new_state_p1, new_state_p2 = self.host.getObservation()
@@ -87,7 +104,21 @@ class Env():
         self.lt = time.time()
         
         return new_state_p1
+    
+    def reset1(self):
+        self.episode_count += 1
+        self.restartGame()
         
+        self.host.resetPosInfo()
+        new_state, _ = self.host.getObservation()
+        self.last_time = time.time()
+        self.ep_start_time = time.time()
+        
+        self.host.applyControls([0,0,0,0,0])
+        
+        self.lt = time.time()
+        
+        return new_state    
         
     def reset2(self):
         self.episode_count += 1
@@ -107,29 +138,70 @@ class Env():
         
         return new_state_p1, new_state_p2
     
-    def restartGame(self):
+    def restartGame(self, n_scroll_up=5):
         self.host.exitGame()
         leftClick(681, 726)
         time.sleep(0.5)
-        self.host.switchWindow()
-        time.sleep(0.1)
-
-        self.opponent.scrollUp(5)
+        if self.p2_name != "":
+            self.host.switchWindow()
+            time.sleep(0.1)
+            
+            self.opponent.scrollUp(n_scroll_up)
+            
+            time.sleep(0.1)
+            leftClick(420, 564)
+            time.sleep(0.1)
+            leftClick(420, 564)
+            time.sleep(0.1)
+            
+            self.host.switchWindow()
+            time.sleep(0.25)
         
-        time.sleep(0.1)
-        leftClick(473, 564)
-        time.sleep(0.1)
-        leftClick(473, 564)
-        time.sleep(0.1)
+        else:
+            self.host.scrollUp(5)
+            time.sleep(3)
+            
+        leftClick(420, 564)
+        time.sleep(0.1)    
         
-        self.host.switchWindow()
-        time.sleep(0.25)
+    def isSafe(self, pos_x, pos_y):
+        return pos_y < self.height_threshold and (100 < pos_x < 450)
+    
+    def goTowardCenter(self, player, pos_x):
+        if pos_x > player.cx:
+            player.applyControls([0, 0, 1, 0, 0])
+        else:
+            player.applyControls([0, 0, 0, 1, 0])
+            
+    def goTowardDeath(self, player, pos_x):
+        if pos_x > player.cx:
+            player.applyControls([0, 1, 0, 1, 0])
+        else:
+            player.applyControls([0, 1, 1, 0, 0])
         
-        self.host.scrollUp(5)
-        
-        leftClick(473, 564)
-        time.sleep(0.1)
-        
+    
+    def fastRestartGame(self):
+        self.host.detectBalls()
+        (pos_x_p1, pos_y_p1), (pos_x_p2, pos_y_p2) = self.getPos()
+        is_safe_p1, is_safe_p2 = self.isSafe(pos_x_p1, pos_y_p1), self.isSafe(pos_x_p2, pos_y_p2)
+        while not (is_safe_p1 and is_safe_p2):
+            self.host.detectBalls()
+            (pos_x_p1, pos_y_p1), (pos_x_p2, pos_y_p2) = self.getPos()
+            is_safe_p1, is_safe_p2 = self.isSafe(pos_x_p1, pos_y_p1), self.isSafe(pos_x_p2, pos_y_p2)
+            
+            if is_safe_p1:
+                self.goTowardCenter(self.host, pos_x_p1)
+            else:
+                self.goTowardDeath(self.host, pos_x_p1)
+                
+            if is_safe_p2:
+                self.goTowardCenter(self.opponent, pos_x_p2)
+            else:
+                self.goTowardDeath(self.opponent, pos_x_p2)
+            
+            
+        self.host.applyControls([0, 0, 0, 0, 0])
+        self.opponent.applyControls([0, 0, 0, 0, 0])
         
     def step(self, action_p1):
         
@@ -150,24 +222,30 @@ class Env():
         new_state_p1, new_state_p2 = self.host.getObservation()
         self.state_p2 = new_state_p2
         
-        (speed_x_p1, speed_y_p1), (speed_x_p2, speed_y_p2) = self.host.getSpeed()
-        alive_p1, alive_p2 = self.host.player1.alive, self.host.player2.alive
+        (speed_x_p1, speed_y_p1), (speed_x_p2, speed_y_p2) = self.getSpeed()
+        (pos_x_p1, pos_y_p1), (pos_x_p2, pos_y_p2) = self.getPos()
         
-        reward_p1 = speed_x_p1/5000 + speed_x_p2/5000
-        reward_p2 = speed_x_p1/5000 + speed_x_p2/5000
+        alive_p1, alive_p2 = self.host.player1.alive, self.host.player2.alive
+        if pos_y_p1 > self.height_threshold:
+            alive_p1 = False
+            
+        if pos_y_p2 > self.height_threshold:
+            alive_p2 = False
+        
+        reward_p1 = 0.1 #+speed_x_p1/8000 + speed_x_p2/8000
+        reward_p2 = 0.1 #+speed_x_p1/8000 + speed_x_p2/8000
         
         done = False
-        if alive_p1 ^ alive_p2:
-            done = True
         
-        if done:
-            if alive_p1:
-                reward_p1 += self.win_reward
-                reward_p2 -= self.win_reward/3
+        if alive_p1 and not alive_p2:
+            done = True
+            reward_p1 += self.win_reward
+            reward_p2 -= self.win_reward/1.5
             
-            elif alive_p2:
-                reward_p2 += self.win_reward
-                reward_p1 -= self.win_reward/3
+        elif alive_p2 and not alive_p1:
+            done = True
+            reward_p2 += self.win_reward
+            reward_p1 -= self.win_reward/1.5
                 
         if time.time() - self.ep_start_time > self.episode_duration:
             done = True
@@ -176,7 +254,43 @@ class Env():
         
         return new_state_p1, reward_p1, done, {}
         
+    def step1(self, action):
         
+        controls = self.getControls(action)
+        self.host.applyControls(controls)
+            
+        self.limitFPS()
+        
+        self.host.detectBalls()
+        new_state, _ = self.host.getObservation()
+        
+        (pos_x_p1, pos_y_p1), (pos_x_p2, pos_y_p2) = self.getPos()
+        
+        alive_p1, alive_p2 = self.host.player1.alive, self.host.player2.alive
+        if pos_y_p1 > self.height_threshold:
+            alive_p1 = False
+            
+        if pos_y_p2 > self.height_threshold:
+            alive_p2 = False
+        
+        reward = 0
+        done = False
+        
+        if alive_p1 and not alive_p2:
+            done = True
+            reward += self.win_reward
+            
+        elif alive_p2 and not alive_p1:
+            done = True
+            reward -= self.win_reward/1.5
+                
+        if time.time() - self.ep_start_time > self.episode_duration:
+            done = True
+            
+        #self.showFPS()
+        
+        return new_state, reward, done, {}
+    
     def step2(self, action_p1, action_p2):
         
         if action_p1 is not None: 
@@ -193,24 +307,30 @@ class Env():
         new_state_p1, new_state_p2 = self.host.getObservation()
         self.state_p2 = new_state_p2
         
-        (speed_x_p1, speed_y_p1), (speed_x_p2, speed_y_p2) = self.host.getSpeed()
-        alive_p1, alive_p2 = self.host.player1.alive, self.host.player2.alive
+        (speed_x_p1, speed_y_p1), (speed_x_p2, speed_y_p2) = self.getSpeed()
+        (pos_x_p1, pos_y_p1), (pos_x_p2, pos_y_p2) = self.getPos()
         
-        reward_p1 = speed_x_p1/5000 + speed_x_p2/5000
-        reward_p2 = speed_x_p1/5000 + speed_x_p2/5000
+        alive_p1, alive_p2 = self.host.player1.alive, self.host.player2.alive
+        if pos_y_p1 > self.height_threshold:
+            alive_p1 = False
+            
+        if pos_y_p2 > self.height_threshold:
+            alive_p2 = False
+        
+        reward_p1 = speed_x_p1/8000 + speed_x_p2/8000
+        reward_p2 = speed_x_p1/8000 + speed_x_p2/8000
         
         done = False
-        if alive_p1 ^ alive_p2:
-            done = True
         
-        if done:
-            if alive_p1:
-                reward_p1 += self.win_reward
-                reward_p2 -= self.win_reward/3
+        if alive_p1 and not alive_p2:
+            done = True
+            reward_p1 += self.win_reward
+            reward_p2 -= self.win_reward/2
             
-            elif alive_p2:
-                reward_p2 += self.win_reward
-                reward_p1 -= self.win_reward/3
+        elif alive_p2 and not alive_p1:
+            done = True
+            reward_p2 += self.win_reward
+            reward_p1 -= self.win_reward/2
                 
         if time.time() - self.ep_start_time > self.episode_duration:
             done = True
@@ -232,6 +352,13 @@ class Env():
                 
             self.last_time = time.time()
             
+    def getPos(self):
+        return ((self.host.player1.pos[0], self.host.player1.pos[1]), 
+                (self.host.player2.pos[0], self.host.player2.pos[1]))
+            
+    def getSpeed(self):
+        return ((abs(self.host.player1.velocity[0]), abs(self.host.player1.velocity[1])),
+                (abs(self.host.player2.velocity[0]), abs(self.host.player2.velocity[1])))
     
     def getControls(self, action):
         thresh = 0.5
@@ -299,10 +426,12 @@ class BallInfo():
             
 
 class BonkPlayer():
-    def __init__(self, name, color, launch_game=True):
+    def __init__(self, name, color, launch_game=True, room_pass="", opponent_color="red"):
         
         self.name = name
         self.color = color
+        self.room_pass = room_pass
+        self.opponent_color = opponent_color
         if launch_game:
             self.chrome_options = Options()
             self.chrome_options.add_argument("--window-size=1920x1080")
@@ -310,7 +439,7 @@ class BonkPlayer():
             self.driver = webdriver.Chrome('chromedriver')
             self.driver.get('https://bonk.io')
         
-        self.avg_len = 5
+        self.avg_len = 3
         self.player1 = BallInfo(self.avg_len)
         self.player2 = BallInfo(self.avg_len)
         
@@ -366,14 +495,27 @@ class BonkPlayer():
             time.sleep(1)
             
         
-    def getPos(self, frame, color):
-           
-        HSV_frame = cv2.cvtColor(frame.copy(), cv2.COLOR_RGB2HSV)
-        mask_range = np.array([5,5,5])
-        mask_lower = np.clip(color - mask_range, 0, 255)
-        mask_upper =  np.clip(color + mask_range, 0, 255)
-        ball_mask = cv2.inRange(HSV_frame, np.array(mask_lower, np.uint8) , np.array(mask_upper, np.uint8))
+    def getPos(self, frame, color=None):
         
+        HSV_frame = cv2.cvtColor(frame.copy(), cv2.COLOR_RGB2HSV)
+        color_range = np.array([10,10,10], np.uint8)
+        
+        if color is not None:
+            ball_mask = self.mask_color(HSV_frame, color, color_range)
+        else:
+            blue_ball = np.array([93, 255, 212])
+            blue_bg = ([96, 128, 96])
+            gray_platform = ([0,0,45])
+            
+            blue_ball_mask = self.mask_color(HSV_frame, blue_ball, color_range)
+            bg_mask = self.mask_color(HSV_frame, blue_bg, color_range)
+            platform_mask = self.mask_color(HSV_frame, gray_platform, color_range)
+            #white_mask = cv2.inRange(HSV_frame, np.array([0,0,200], np.uint8) , np.array([255,50,255], np.uint8))
+            
+            not_ball_mask = blue_ball_mask + bg_mask + platform_mask #+white_mask
+            ball_mask = cv2.bitwise_not(not_ball_mask)
+            ball_mask = cv2.erode(ball_mask, None, iterations=4)
+            
         M = cv2.moments(ball_mask)
         is_ball, ball_x, ball_y = False, -1, -1
         if M["m00"] != 0:
@@ -382,6 +524,11 @@ class BonkPlayer():
             ball_y = round(M["m01"] / M["m00"], 2)
             
         return is_ball, (ball_x, ball_y)
+    
+    def mask_color(self, frame, color, color_range):
+        mask_lower = np.clip(color - color_range, 0, 255)
+        mask_upper =  np.clip(color + color_range, 0, 255)
+        return cv2.inRange(frame, mask_lower , mask_upper)
     
     def resetPosInfo(self):
         p1_ball_pos, p2_ball_pos = self.detectBalls()
@@ -394,7 +541,11 @@ class BonkPlayer():
         red = np.array([7,239,191])
         
         p1_is_ball, p1_ball_pos = self.getPos(frame, blue)
-        p2_is_ball, p2_ball_pos = self.getPos(frame, red)
+        
+        if self.opponent_color == "red":
+            p2_is_ball, p2_ball_pos = self.getPos(frame, red)
+        else:
+            p2_is_ball, p2_ball_pos = self.getPos(frame, None)
         
         if p1_is_ball:
             self.player1.alive = True
@@ -449,10 +600,6 @@ class BonkPlayer():
         player2_obs = self.getPlayerObs(self.player2, self.player1)
         
         return player1_obs, player2_obs
-    
-    def getSpeed(self):
-        return ((abs(self.player1.velocity[0]), abs(self.player1.velocity[1])),
-                (abs(self.player2.velocity[0]), abs(self.player2.velocity[1])))
         
     def updateFramerate(self):
         new_time = time.time()
@@ -495,6 +642,12 @@ class BonkPlayer():
             
     def scrollUp(self, n=5):
         leftClick(444, 980)
+        
+        for i in range(n):
+            self.applyControls([0,0,0,0,0])
+            time.sleep(0.1)
+            self.applyControls([0,0,1,0,0])
+        
         for i in range(n):
             self.applyControls([0,0,0,0,0])
             time.sleep(0.1)
@@ -502,6 +655,7 @@ class BonkPlayer():
             
         time.sleep(0.1)
         self.applyControls([0,0,0,0,0])
+        
     
     def pressDown(self):
         ActionChains(self.driver)\
@@ -534,28 +688,32 @@ class BonkPlayer():
         leftClick(251, 700)
         time.sleep(0.5)
         leftClick(468, 527)
-        pyautogui.typewrite('OUIOUIBAGUETTE', interval=0.05)
-        # leftClick(490, 583)
-        # pyautogui.keyDown('return')
-        # pyautogui.typewrite('3', interval=0.05)
+        pyautogui.typewrite(self.room_pass, interval=0.05)
+        time.sleep(0.5)
+        leftClick(500, 583)
+        time.sleep(0.5)
+        pyautogui.typewrite(['backspace'])
+        time.sleep(0.2)
+        pyautogui.typewrite('2', interval=0.05)
+        time.sleep(0.5)
         leftClick(538, 720)
         time.sleep(1)
         
-        
+    
     def setMap(self):
         leftClick(590, 683)
         time.sleep(0.5)
-        leftClick(306, 487)
-        time.sleep(1)
-        leftClick(306, 634)
-        time.sleep(1)
+        # leftClick(306, 487)
+        # time.sleep(1)
+        # leftClick(306, 634)
+        # time.sleep(1)
         leftClick(567, 484)
         time.sleep(0.2)
-        pyautogui.typewrite('1v1 1v1 1v1', interval=0.05)
-        time.sleep(0.5)
+        pyautogui.typewrite('Simple 1v1 Bot', interval=0.05)
+        time.sleep(1)
         pyautogui.press('enter')
         time.sleep(2)
-        leftClick(490, 589)
+        leftClick(300, 600)
         time.sleep(1.5)
         
     def startGame(self):
@@ -570,12 +728,12 @@ class BonkPlayer():
         
     def joinGame(self):
         leftClick(467, 540)
-        time.sleep(0.5)
+        time.sleep(1)
         leftClick(485, 491)
-        time.sleep(0.5)
+        time.sleep(1)
         leftClick(695, 701)
-        time.sleep(0.5)
-        pyautogui.typewrite('OUIOUIBAGUETTE', interval=0.05)
+        time.sleep(1)
+        pyautogui.typewrite(self.room_pass, interval=0.05)
         leftClick(543, 626)
         time.sleep(1)
         
@@ -585,3 +743,4 @@ class BonkPlayer():
         pyautogui.keyUp('alt')
         pyautogui.keyUp('tab')
         time.sleep(0.5)
+        
