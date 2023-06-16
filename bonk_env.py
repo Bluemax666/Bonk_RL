@@ -2,7 +2,7 @@
 """
 Created on Sat Jul  9 03:46:52 2022
 
-@author: maxim
+@author: Maxime
 """
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
